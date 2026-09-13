@@ -1,0 +1,307 @@
+USE mavenmovies;
+
+-- Question 1
+-- Display the names of customers who have rented more movies than the
+-- average number of rentals made by all customers.
+
+SELECT
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name
+FROM customer c
+LEFT JOIN rental r
+    ON c.customer_id = r.customer_id
+GROUP BY
+    c.customer_id,
+    c.first_name,
+    c.last_name
+HAVING COUNT(r.rental_id) > (
+    SELECT AVG(rental_count)
+    FROM (
+        SELECT
+            c2.customer_id,
+            COUNT(r2.rental_id) AS rental_count
+        FROM customer c2
+        LEFT JOIN rental r2
+            ON c2.customer_id = r2.customer_id
+        GROUP BY c2.customer_id
+    ) AS customer_rentals
+);
+
+
+-- Question 2
+-- Display each film along with its rental rate and assign a rank based on rental
+-- rate from highest to lowest.
+
+SELECT
+    title,
+    rental_rate,
+    RANK() OVER (ORDER BY rental_rate DESC) AS rental_rate_rank
+FROM film;
+
+
+-- Question 3
+-- Create a view that displays customer names along with their email and active 
+-- status.
+
+CREATE OR REPLACE VIEW customer_contact_status AS
+SELECT
+    CONCAT(first_name, ' ', last_name) AS customer_name,
+    email,
+    active
+FROM customer;
+
+
+-- Question 4
+-- Find the top 10 customers who generated the highest payment amount.
+
+SELECT
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    SUM(p.amount) AS total_payment_amount
+FROM customer c
+INNER JOIN payment p
+    ON c.customer_id = p.customer_id
+GROUP BY
+    c.customer_id,
+    c.first_name,
+    c.last_name
+ORDER BY total_payment_amount DESC
+LIMIT 10;
+
+
+-- Question 5
+-- Identify the customers whose total spending on rentals falls within the top 
+-- 20% of all customers.
+
+WITH customer_spending AS (
+    SELECT
+        c.customer_id,
+        CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+        COALESCE(SUM(p.amount), 0) AS total_spending
+    FROM customer c
+    LEFT JOIN payment p
+        ON c.customer_id = p.customer_id
+    GROUP BY
+        c.customer_id,
+        c.first_name,
+        c.last_name
+),
+ranked_customers AS (
+    SELECT
+        customer_id,
+        customer_name,
+        total_spending,
+        NTILE(5) OVER (ORDER BY total_spending DESC) AS spending_group
+    FROM customer_spending
+)
+SELECT
+    customer_name,
+    total_spending
+FROM ranked_customers
+WHERE spending_group = 1
+ORDER BY total_spending DESC;
+
+
+-- Question 6
+-- Display every actor along with the number of movies they acted in and assign 
+-- Dense Rank based on movie count.
+
+SELECT
+    CONCAT(a.first_name, ' ', a.last_name) AS actor_name,
+    COUNT(fa.film_id) AS movie_count,
+    DENSE_RANK() OVER (ORDER BY COUNT(fa.film_id) DESC) AS movie_count_rank
+FROM actor a
+LEFT JOIN film_actor fa
+    ON a.actor_id = fa.actor_id
+GROUP BY
+    a.actor_id,
+    a.first_name,
+    a.last_name
+ORDER BY movie_count_rank, actor_name;
+
+
+-- Question 7
+-- Create a view showing movie title, category, rental rate and replacement cost.
+
+CREATE OR REPLACE VIEW movie_category_details AS
+SELECT
+    f.title,
+    c.name AS category,
+    f.rental_rate,
+    f.replacement_cost
+FROM film f
+INNER JOIN film_category fc
+    ON f.film_id = fc.film_id
+INNER JOIN category c
+    ON fc.category_id = c.category_id;
+
+
+-- Question 8
+-- Create a stored procedure that returns the top 20 most rented movies.
+
+DROP PROCEDURE IF EXISTS top_20_most_rented_movies;
+
+DELIMITER //
+
+CREATE PROCEDURE top_20_most_rented_movies()
+BEGIN
+    SELECT
+        f.title,
+        COUNT(r.rental_id) AS rental_count
+    FROM film f
+    INNER JOIN inventory i
+        ON f.film_id = i.film_id
+    INNER JOIN rental r
+        ON i.inventory_id = r.inventory_id
+    GROUP BY
+        f.film_id,
+        f.title
+    ORDER BY rental_count DESC
+    LIMIT 20;
+END //
+
+DELIMITER ;
+
+
+-- Question 9
+-- Create a procedure that accepts a movie rating and returns all movies of that 
+-- rating.
+
+DROP PROCEDURE IF EXISTS movies_by_rating;
+
+DELIMITER //
+
+CREATE PROCEDURE movies_by_rating(IN movie_rating VARCHAR(10))
+BEGIN
+    SELECT
+        title,
+        rating
+    FROM film
+    WHERE rating = movie_rating;
+END //
+
+DELIMITER ;
+
+
+-- Question 10
+-- Identify the top 3 films in each category based on their rental counts.
+
+WITH film_rentals AS (
+    SELECT
+        c.category_id,
+        c.name AS category,
+        f.film_id,
+        f.title,
+        COUNT(r.rental_id) AS rental_count
+    FROM category c
+    INNER JOIN film_category fc
+        ON c.category_id = fc.category_id
+    INNER JOIN film f
+        ON fc.film_id = f.film_id
+    LEFT JOIN inventory i
+        ON f.film_id = i.film_id
+    LEFT JOIN rental r
+        ON i.inventory_id = r.inventory_id
+    GROUP BY
+        c.category_id,
+        c.name,
+        f.film_id,
+        f.title
+),
+ranked_films AS (
+    SELECT
+        category,
+        title,
+        rental_count,
+        ROW_NUMBER() OVER (
+            PARTITION BY category_id
+            ORDER BY rental_count DESC, film_id
+        ) AS film_rank
+    FROM film_rentals
+)
+SELECT
+    category,
+    title,
+    rental_count
+FROM ranked_films
+WHERE film_rank <= 3
+ORDER BY category, film_rank;
+
+
+-- Question 11
+-- Calculate the running total of rentals per category, ordered by rental count.
+
+WITH category_rentals AS (
+    SELECT
+        c.category_id,
+        c.name AS category,
+        COUNT(r.rental_id) AS rental_count
+    FROM category c
+    INNER JOIN film_category fc
+        ON c.category_id = fc.category_id
+    INNER JOIN inventory i
+        ON fc.film_id = i.film_id
+    INNER JOIN rental r
+        ON i.inventory_id = r.inventory_id
+    GROUP BY
+        c.category_id,
+        c.name
+)
+SELECT
+    category,
+    rental_count,
+    SUM(rental_count) OVER (
+        ORDER BY rental_count, category_id
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS running_total_rentals
+FROM category_rentals
+ORDER BY rental_count, category_id;
+
+
+-- Question 12
+-- Create a CTE to generate a report showing pairs of actors who have 
+-- appeared in the same film together, using the film_actor table
+
+WITH actor_pairs AS (
+    SELECT
+        fa1.film_id,
+        fa1.actor_id AS actor1_id,
+        fa2.actor_id AS actor2_id
+    FROM film_actor fa1
+    INNER JOIN film_actor fa2
+        ON fa1.film_id = fa2.film_id
+       AND fa1.actor_id < fa2.actor_id
+)
+SELECT
+    CONCAT(a1.first_name, ' ', a1.last_name) AS actor1,
+    CONCAT(a2.first_name, ' ', a2.last_name) AS actor2,
+    f.title AS film_title
+FROM actor_pairs ap
+INNER JOIN actor a1
+    ON ap.actor1_id = a1.actor_id
+INNER JOIN actor a2
+    ON ap.actor2_id = a2.actor_id
+INNER JOIN film f
+    ON ap.film_id = f.film_id
+ORDER BY f.title, actor1, actor2;
+
+
+-- Question 13
+-- Create a procedure that accepts a customer ID as input and returns the 
+-- customer's total payment as an output parameter.
+
+DROP PROCEDURE IF EXISTS get_customer_total_payment;
+
+DELIMITER //
+
+CREATE PROCEDURE get_customer_total_payment(
+    IN input_customer_id SMALLINT,
+    OUT total_payment DECIMAL(10,2)
+)
+BEGIN
+    SELECT
+        COALESCE(SUM(amount), 0.00)
+    INTO total_payment
+    FROM payment
+    WHERE customer_id = input_customer_id;
+END //
+
+DELIMITER ;
